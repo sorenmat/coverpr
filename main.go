@@ -11,19 +11,12 @@ import (
 
 	"io/ioutil"
 
+	"github.com/alecthomas/kingpin"
 	"github.com/google/go-github/github"
 	"github.com/waigani/diffparser"
 	"golang.org/x/oauth2"
 	"golang.org/x/tools/cover"
 )
-
-func add(a, b int) int {
-	return a + b
-}
-
-func sub(a, b int) int {
-	return a - b
-}
 
 type Line struct {
 	number int
@@ -58,89 +51,118 @@ func generateDiff(diffData string) []ChangeSet {
 			changeSet = append(changeSet, c)
 		}
 	}
-	// fmt.Println("ChangeSet", changeSet)
 	return changeSet
 }
 
-func generateCoverageData() []byte {
-	err := os.Chdir("test")
-	if err != nil {
-		fmt.Println("unable to change directory")
-	}
-	// go test -coverprofile=coverage.out .
-	_, err = exec.Command("go", "test", "-coverprofile=/tmp/cover.out", ".").Output()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	coverageData, err := ioutil.ReadFile("/tmp/cover.out")
-	return coverageData
-}
-
-func main() {
-
+func githubClient(githubToken string) *github.Client {
 	ts := oauth2.StaticTokenSource(
-		&oauth2.Token{AccessToken: "f3b2eb2a97a547f62249e9dc94b1c2d73a0766a8"},
+		&oauth2.Token{AccessToken: githubToken},
 	)
 	tc := oauth2.NewClient(oauth2.NoContext, ts)
 
-	client := github.NewClient(tc)
-	owner := "sorenmat"
-	repo := "go_pr_testing"
-	prNumber := 1
-	pr, _, err := client.PullRequests.Get(owner, repo, prNumber)
-	if err != nil {
-		fmt.Println(err)
-	}
+	return github.NewClient(tc)
 
-	diffURL := pr.DiffURL
-	resp, err := http.Get(*diffURL)
-	b, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		log.Fatal("unable to get diff")
-	}
+}
+func getDiff(githubToken string, owner string, repo string, prNumber int) string {
+	if githubToken != "" {
+		client := githubClient(githubToken)
+		// owner := "sorenmat"
+		// repo := "go_pr_testing"
+		// prNumber := 1
+		pr, _, err := client.PullRequests.Get(owner, repo, prNumber)
+		if err != nil {
+			fmt.Println(err)
+		}
 
-	diffText := string(b)
-	fmt.Println("Diff: ", diffText)
+		diffURL := pr.DiffURL
+		resp, err := http.Get(*diffURL)
+		b, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			log.Fatal("unable to get diff")
+		}
+		return string(b)
+	}
+	cmd := exec.Command("git", "diff")
+	// err := cmd.Run()
+	// if err != nil {
+	// fmt.Println("unable to generate diff from git", err)
+	// os.Exit(1)
+	// }
+	data, err := cmd.Output()
+	if err != nil {
+		fmt.Println("unable to get output from git diff", err)
+		os.Exit(1)
+	}
+	return string(data)
+}
+func main() {
+	// verbose := kingpin.Flag("verbose", "Verbose mode.").Short('v').Bool()
+	githubToken := kingpin.Flag("github_token", "Github OAuth2 access token").OverrideDefaultFromEnvar("GITHUB_TOKEN").String()
+	repoName := kingpin.Flag("repo", "Github repository name").Default("").String()
+	repoOwner := kingpin.Flag("repoOwner", "Github repository owner").Default("").String()
+	prNumber := kingpin.Flag("pr", "Github pull-request number").Int()
+
+	coverFile := kingpin.Flag("coverFile", "Coverfile generated with go test -cover").OverrideDefaultFromEnvar("COVER_FILE").Required().String()
+	kingpin.Parse()
+
+	if *githubToken != "" {
+		if *repoOwner == "" || *repoName == "" || *prNumber == 0 {
+			fmt.Println("Please specify all github information repo, repoOwner and pr")
+			os.Exit(1)
+		}
+	}
+	diffText := getDiff(*githubToken, *repoOwner, *repoName, *prNumber)
+	// fmt.Println("Diff: ", diffText)
 	changeSet := generateDiff(diffText)
-	coverageData := generateCoverageData()
-	if coverageData == nil {
-		log.Fatal("unable to open coverage report")
-	}
 
-	c := parseCoverfile("/tmp/cover.out", changeSet)
-	result := "Please note the following code is not covered by tests.\n"
+	c := parseCoverfile(*coverFile, changeSet)
+	markdown := *githubToken != ""
+	// output coverage data to either github or console
+	result := generateResult(c, markdown)
+
+	if *githubToken != "" {
+		comment := &github.IssueComment{
+			Body: &result,
+		}
+		comment, _, err := githubClient(*githubToken).Issues.CreateComment(*repoOwner, *repoName, *prNumber, comment)
+		if err != nil {
+			log.Fatal("couldn't create comment", err)
+		}
+		fmt.Println("Created a comment at ", *comment.HTMLURL)
+	} else {
+		fmt.Println(result)
+	}
+	if result != "" {
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+func generateResult(c []ChangeSet, markdown bool) string {
+	result := ""
 	for _, v := range c {
-		result += "in " + v.filename + "\n\n```go\n"
-		fmt.Printf("%v contains uncovered code\n", v.filename)
+		result += v.filename + "\n\n"
+		if markdown {
+			result += "```go\n"
+		}
+		// result += fmt.Sprintf("%v contains uncovered code\n", v.filename)
 		for _, resLine := range v.lines {
 
 			if !resLine.coverd {
-				// body := fmt.Sprintf("%v %v\n", resLine.number, resLine.line)
-				// position := 1
-				// inreplyto := 1
-				// comment := &github.PullRequestComment{
-				// 	CommitID: pr.Head.SHA,
-				// 	// Path:
-				// 	Body: &body,
-				// 	// Position:  &position,
-				// 	InReplyTo: &inreplyto,
-				// }
 				// resline coverd
-				fmt.Printf("%v %v\n", resLine.number, resLine.line)
+				// fmt.Printf("%v %v\n", resLine.number, resLine.line)
 				result += fmt.Sprintf("%v %v\n", resLine.number, resLine.line)
 			}
 		}
-		result += "```"
+		if markdown {
+			result += "```"
+		}
 	}
-	comment := &github.IssueComment{
-		Body: &result,
+	if result != "" {
+		// If we have a result prepend a header
+		result = "Please note the following code is not covered by tests.\n" + result
 	}
-	_, _, err = client.Issues.CreateComment(owner, repo, prNumber, comment)
-	// _, _, err := client.PullRequests.CreateComment(owner, repo, prNumber, comment)
-	if err != nil {
-		log.Fatal("couldn't create comment", err)
-	}
+	return result
 }
 
 func getPackage() string {
