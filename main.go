@@ -33,7 +33,7 @@ type ChangeSet struct {
 const Debug = false
 
 func includeFileInCoverage(filename string) bool {
-	return strings.HasSuffix(filename, "_test.go") || strings.HasSuffix(filename, ".go")
+	return strings.HasSuffix(filename, ".go") && !strings.HasSuffix(filename, "_test.go")
 }
 
 func generateDiff(diffData string) []ChangeSet {
@@ -41,7 +41,7 @@ func generateDiff(diffData string) []ChangeSet {
 
 	var changeSet []ChangeSet
 	for _, f := range diff.Files {
-		if strings.HasSuffix(f.NewName, ".go") && !strings.HasSuffix(f.NewName, "_test.go") {
+		if includeFileInCoverage(f.NewName) {
 			c := ChangeSet{filename: fmt.Sprintf("%v%c%v", getPackage(), os.PathSeparator, f.NewName)}
 			for _, hunk := range f.Hunks {
 				for _, l := range hunk.NewRange.Lines {
