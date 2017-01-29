@@ -20,34 +20,34 @@ import (
 	"golang.org/x/tools/cover"
 )
 
-type Line struct {
+type line struct {
 	number int
 	line   string
 	coverd bool
 }
-type ChangeSet struct {
+type changeset struct {
 	filename string
-	lines    []Line
+	lines    []line
 }
 
-const Debug = false
+const enableDebug = false
 
 func includeFileInCoverage(filename string) bool {
 	return strings.HasSuffix(filename, ".go") && !strings.HasSuffix(filename, "_test.go")
 }
 
-func generateDiff(diffData string) []ChangeSet {
+func generateDiff(diffData string) []changeset {
 	diff, _ := diffparser.Parse(diffData)
 
-	var changeSet []ChangeSet
+	var changeSet []changeset
 	for _, f := range diff.Files {
 		if includeFileInCoverage(f.NewName) {
-			c := ChangeSet{filename: fmt.Sprintf("%v%c%v", getPackage(), os.PathSeparator, f.NewName)}
+			c := changeset{filename: fmt.Sprintf("%v%c%v", getPackage(), os.PathSeparator, f.NewName)}
 			for _, hunk := range f.Hunks {
 				for _, l := range hunk.NewRange.Lines {
 					if l.Mode == diffparser.ADDED {
 						debug(fmt.Sprintf("ADDED: %v %v %v %v\n", l.Mode, l.Number, l.Position, l.Content))
-						c.lines = append(c.lines, Line{number: l.Number, line: l.Content})
+						c.lines = append(c.lines, line{number: l.Number, line: l.Content})
 					}
 				}
 			}
@@ -94,6 +94,7 @@ func getDiff(githubToken string, owner string, repo string, prNumber int) string
 	debug("Diff: " + string(data))
 	return string(data)
 }
+
 func main() {
 	githubToken := kingpin.Flag("github_token", "Github OAuth2 access token").OverrideDefaultFromEnvar("GITHUB_TOKEN").String()
 	repoName := kingpin.Flag("repo", "Github repository name").Default("").String()
@@ -136,7 +137,7 @@ func main() {
 	os.Exit(0)
 }
 
-func generateResult(c []ChangeSet, markdown bool) string {
+func generateResult(c []changeset, markdown bool) string {
 	result := ""
 	if markdown {
 		result += "```go\n"
@@ -172,7 +173,7 @@ func getPackage() string {
 	return strings.Replace(wd, path+"/src/", "", -1)
 }
 
-func parseCoverfile(file string, changeSet []ChangeSet) []ChangeSet {
+func parseCoverfile(file string, changeSet []changeset) []changeset {
 	// name.go:line.column,line.column numberOfStatements count
 	// see https://github.com/golang/go/blob/0104a31b8fbcbe52728a08867b26415d282c35d2/src/cmd/cover/profile.go#L56
 	fmt.Println("Reading cover file", file)
@@ -203,7 +204,7 @@ func parseCoverfile(file string, changeSet []ChangeSet) []ChangeSet {
 }
 
 func debug(s string) {
-	if Debug {
+	if enableDebug {
 		fmt.Println(s)
 	}
 }

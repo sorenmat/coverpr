@@ -30,3 +30,4 @@ _testmain.go
 vendor/
 .idea
 .vscode
+dist
