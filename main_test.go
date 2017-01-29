@@ -15,12 +15,12 @@ func Test_invalidGoFile(t *testing.T) {
 		{
 			name:          "valid go file",
 			args:          args{filename: "testing.go"},
-			invalidGoFile: false,
+			invalidGoFile: true,
 		},
 		{
 			name:          "valid go file",
 			args:          args{filename: "testing.txt"},
-			invalidGoFile: true,
+			invalidGoFile: false,
 		},
 	}
 	for _, tt := range tests {

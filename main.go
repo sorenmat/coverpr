@@ -11,6 +11,8 @@ import (
 
 	"io/ioutil"
 
+	"net/http/httputil"
+
 	"github.com/alecthomas/kingpin"
 	"github.com/google/go-github/github"
 	"github.com/waigani/diffparser"
@@ -28,7 +30,7 @@ type ChangeSet struct {
 	lines    []Line
 }
 
-var basedir = "test"
+const Debug = false
 
 func includeFileInCoverage(filename string) bool {
 	return strings.HasSuffix(filename, "_test.go") || strings.HasSuffix(filename, ".go")
@@ -39,13 +41,14 @@ func generateDiff(diffData string) []ChangeSet {
 
 	var changeSet []ChangeSet
 	for _, f := range diff.Files {
-		c := ChangeSet{filename: fmt.Sprintf("%v%c%v", getPackage(), os.PathSeparator, f.NewName)}
-		// fmt.Println("Processing", f.NewName)
 		if strings.HasSuffix(f.NewName, ".go") && !strings.HasSuffix(f.NewName, "_test.go") {
-			for _, l := range f.Hunks[0].NewRange.Lines {
-				if l.Mode == diffparser.ADDED {
-					// fmt.Printf("DIFF: %v %v %v %v\n", l.Mode, l.Number, l.Position, l.Content)
-					c.lines = append(c.lines, Line{number: l.Number, line: l.Content})
+			c := ChangeSet{filename: fmt.Sprintf("%v%c%v", getPackage(), os.PathSeparator, f.NewName)}
+			for _, hunk := range f.Hunks {
+				for _, l := range hunk.NewRange.Lines {
+					if l.Mode == diffparser.ADDED {
+						debug(fmt.Sprintf("ADDED: %v %v %v %v\n", l.Mode, l.Number, l.Position, l.Content))
+						c.lines = append(c.lines, Line{number: l.Number, line: l.Content})
+					}
 				}
 			}
 			changeSet = append(changeSet, c)
@@ -59,19 +62,18 @@ func githubClient(githubToken string) *github.Client {
 		&oauth2.Token{AccessToken: githubToken},
 	)
 	tc := oauth2.NewClient(oauth2.NoContext, ts)
-
 	return github.NewClient(tc)
-
 }
+
 func getDiff(githubToken string, owner string, repo string, prNumber int) string {
 	if githubToken != "" {
+		fmt.Println(githubToken)
 		client := githubClient(githubToken)
-		// owner := "sorenmat"
-		// repo := "go_pr_testing"
-		// prNumber := 1
-		pr, _, err := client.PullRequests.Get(owner, repo, prNumber)
+		pr, resp1, err := client.PullRequests.Get(owner, repo, prNumber)
 		if err != nil {
-			fmt.Println(err)
+			dump, _ := httputil.DumpResponse(resp1.Response, true)
+			fmt.Println(string(dump))
+			log.Fatal(err)
 		}
 
 		diffURL := pr.DiffURL
@@ -83,20 +85,16 @@ func getDiff(githubToken string, owner string, repo string, prNumber int) string
 		return string(b)
 	}
 	cmd := exec.Command("git", "diff")
-	// err := cmd.Run()
-	// if err != nil {
-	// fmt.Println("unable to generate diff from git", err)
-	// os.Exit(1)
-	// }
+
 	data, err := cmd.Output()
 	if err != nil {
 		fmt.Println("unable to get output from git diff", err)
 		os.Exit(1)
 	}
+	debug("Diff: " + string(data))
 	return string(data)
 }
 func main() {
-	// verbose := kingpin.Flag("verbose", "Verbose mode.").Short('v').Bool()
 	githubToken := kingpin.Flag("github_token", "Github OAuth2 access token").OverrideDefaultFromEnvar("GITHUB_TOKEN").String()
 	repoName := kingpin.Flag("repo", "Github repository name").Default("").String()
 	repoOwner := kingpin.Flag("repoOwner", "Github repository owner").Default("").String()
@@ -112,7 +110,7 @@ func main() {
 		}
 	}
 	diffText := getDiff(*githubToken, *repoOwner, *repoName, *prNumber)
-	// fmt.Println("Diff: ", diffText)
+
 	changeSet := generateDiff(diffText)
 
 	c := parseCoverfile(*coverFile, changeSet)
@@ -140,29 +138,29 @@ func main() {
 
 func generateResult(c []ChangeSet, markdown bool) string {
 	result := ""
+	if markdown {
+		result += "```go\n"
+	}
 	for _, v := range c {
-		result += v.filename + "\n\n"
-		if markdown {
-			result += "```go\n"
-		}
-		// result += fmt.Sprintf("%v contains uncovered code\n", v.filename)
+		result += "\n" + v.filename + "\n\n"
+
 		for _, resLine := range v.lines {
 
 			if !resLine.coverd {
 				// resline coverd
-				// fmt.Printf("%v %v\n", resLine.number, resLine.line)
 				result += fmt.Sprintf("%v %v\n", resLine.number, resLine.line)
 			}
 		}
-		if markdown {
-			result += "```"
-		}
 	}
-	if result != "" {
+	if markdown {
+		result += "```"
+	}
+
+	if strings.TrimSpace(result) != "" {
 		// If we have a result prepend a header
 		result = "Please note the following code is not covered by tests.\n" + result
 	}
-	return result
+	return strings.TrimSpace(result)
 }
 
 func getPackage() string {
@@ -171,7 +169,7 @@ func getPackage() string {
 		log.Fatal("unable to locate working directory")
 	}
 	path := os.Getenv("GOPATH")
-	return strings.Replace(wd, path+"/src/", "", -1) + "/" + basedir
+	return strings.Replace(wd, path+"/src/", "", -1)
 }
 
 func parseCoverfile(file string, changeSet []ChangeSet) []ChangeSet {
@@ -182,16 +180,14 @@ func parseCoverfile(file string, changeSet []ChangeSet) []ChangeSet {
 	if err != nil {
 		log.Fatal("unable to parse coverage profile", err)
 	}
-	// fmt.Println("--------------------")
-	// fmt.Println("Using package", getPackage())
+
 	result := changeSet
 	for _, f := range p {
 		for rk, v := range changeSet {
 			for clk, changeline := range v.lines {
-				// fmt.Printf("%v == %v ? %v\n", v.filename, f.FileName, (v.filename == f.FileName))
+				debug(fmt.Sprintf("same file %v", v.filename == f.FileName))
 				if v.filename == f.FileName {
 					for _, b := range f.Blocks {
-						// fmt.Printf("%v:%v included in %v %v\n", b.StartLine, b.EndLine, changeline.number, (changeline.number >= b.StartLine && changeline.number <= b.EndLine))
 						if changeline.number >= b.StartLine && changeline.number <= b.EndLine && b.Count == 1 {
 							result[rk].lines[clk].coverd = true
 						}
@@ -204,4 +200,10 @@ func parseCoverfile(file string, changeSet []ChangeSet) []ChangeSet {
 		}
 	}
 	return changeSet
+}
+
+func debug(s string) {
+	if Debug {
+		fmt.Println(s)
+	}
 }
